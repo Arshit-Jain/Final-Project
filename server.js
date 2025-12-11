@@ -10,34 +10,23 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const NODE_ENV = process.env.NODE_ENV || 'development';
 
-// CORS configuration
-const allowedOrigins = [
-    'http://localhost:5173',
-    'http://localhost:3000',
-    process.env.FRONTEND_URL
-].filter(Boolean);
-
+// CORS configuration - ALLOW ALL ORIGINS for tracking
 app.use(cors({
-    origin: function (origin, callback) {
-        if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-            return callback(null, true);
-        }
-        callback(new Error('CORS policy violation'), false);
-    },
-    credentials: true
+    origin: '*', // Allow all origins for the pixel tracker
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: false
 }));
 
 // Middleware
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(express.static('public'));
 
-// Request logging in production
-if (NODE_ENV === 'production') {
-    app.use((req, res, next) => {
-        console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
-        next();
-    });
-}
+// Request logging
+app.use((req, res, next) => {
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.path} - Origin: ${req.headers.origin || 'none'}`);
+    next();
+});
 
 // Compression for production
 if (NODE_ENV === 'production') {
@@ -49,7 +38,7 @@ if (NODE_ENV === 'production') {
 const rateLimit = require('express-rate-limit');
 const limiter = rateLimit({
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 60000,
-    max: parseInt(process.env.RATE_LIMIT_MAX) || 100,
+    max: parseInt(process.env.RATE_LIMIT_MAX) || 500, // Increased for tracking
     message: 'Too many requests from this IP'
 });
 app.use('/api/', limiter);
@@ -66,11 +55,10 @@ app.get('/health', (req, res) => {
 app.get('/pixel.js', (req, res) => {
     const pixelPath = path.join(__dirname, 'public', 'pixel.js');
     
-    // Check if file exists
     if (fs.existsSync(pixelPath)) {
         res.setHeader('Content-Type', 'application/javascript');
-        res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
-        res.setHeader('Access-Control-Allow-Origin', '*'); // Allow cross-origin loading
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+        res.setHeader('Access-Control-Allow-Origin', '*');
         res.sendFile(pixelPath);
     } else {
         console.error('pixel.js not found at:', pixelPath);
@@ -97,11 +85,11 @@ const initDb = async () => {
     try {
         const schemaSql = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
         await db.query(schemaSql);
-        console.log('Database schema initialized');
+        console.log('✅ Database schema initialized');
     } catch (err) {
-        console.error('Error initializing database schema:', err);
+        console.error('❌ Error initializing database schema:', err);
         if (NODE_ENV === 'production') {
-            process.exit(1); // Exit if DB init fails in production
+            process.exit(1);
         }
     }
 };
@@ -133,7 +121,6 @@ app.post('/api/events', async (req, res) => {
         for (const event of events) {
             const { session_id, event_type, url, referrer, timestamp, metadata } = event;
 
-            // Validation
             if (!session_id || !event_type || !url) {
                 await client.query('ROLLBACK');
                 return res.status(400).json({
@@ -161,13 +148,16 @@ app.post('/api/events', async (req, res) => {
         }
 
         await client.query('COMMIT');
+        
+        console.log(`✅ Ingested ${events.length} events from session ${events[0].session_id}`);
+        
         res.status(200).json({
             message: 'Events ingested successfully',
             count: events.length
         });
     } catch (err) {
         await client.query('ROLLBACK');
-        console.error('Error ingesting events:', err);
+        console.error('❌ Error ingesting events:', err);
         res.status(500).json({ error: 'Internal server error' });
     } finally {
         client.release();
@@ -223,9 +213,128 @@ app.get('/api/stats', async (req, res) => {
     }
 });
 
+// Get all sessions with summary
+app.get('/api/sessions', async (req, res) => {
+    try {
+        const result = await db.query(`
+            SELECT 
+                s.session_id,
+                s.start_time,
+                s.end_time,
+                s.page_views,
+                s.user_agent,
+                EXTRACT(EPOCH FROM (COALESCE(s.end_time, s.start_time) - s.start_time)) as duration,
+                COUNT(CASE WHEN e.event_type = 'click' THEN 1 END) as total_clicks
+            FROM sessions s
+            LEFT JOIN events e ON s.session_id = e.session_id
+            GROUP BY s.session_id, s.start_time, s.end_time, s.page_views, s.user_agent
+            ORDER BY s.start_time DESC
+            LIMIT 50
+        `);
+
+        res.json({
+            sessions: result.rows.map(row => ({
+                ...row,
+                duration: parseFloat(row.duration) || 0,
+                total_clicks: parseInt(row.total_clicks) || 0
+            }))
+        });
+    } catch (err) {
+        console.error('Error fetching sessions:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Get detailed session information
+app.get('/api/sessions/:sessionId', async (req, res) => {
+    const { sessionId } = req.params;
+
+    try {
+        // Get session info
+        const sessionResult = await db.query(
+            `SELECT 
+                session_id,
+                start_time,
+                end_time,
+                page_views,
+                user_agent,
+                EXTRACT(EPOCH FROM (COALESCE(end_time, start_time) - start_time)) as duration
+            FROM sessions
+            WHERE session_id = $1`,
+            [sessionId]
+        );
+
+        if (sessionResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Session not found' });
+        }
+
+        const session = sessionResult.rows[0];
+
+        // Get all events for this session
+        const eventsResult = await db.query(
+            `SELECT 
+                event_type,
+                url,
+                referrer,
+                timestamp,
+                metadata
+            FROM events
+            WHERE session_id = $1
+            ORDER BY timestamp ASC`,
+            [sessionId]
+        );
+
+        // Get pages with time-on-page calculation
+        const pagesResult = await db.query(`
+            WITH page_visits AS (
+                SELECT 
+                    url,
+                    timestamp,
+                    LEAD(timestamp) OVER (ORDER BY timestamp) as next_timestamp
+                FROM events
+                WHERE session_id = $1 AND event_type = 'pageview'
+            )
+            SELECT 
+                url,
+                MIN(timestamp) as first_visit,
+                COUNT(*) as view_count,
+                AVG(EXTRACT(EPOCH FROM (next_timestamp - timestamp))) as time_on_page
+            FROM page_visits
+            GROUP BY url
+            ORDER BY first_visit ASC
+        `, [sessionId]);
+
+        // Get click events
+        const clicksResult = await db.query(
+            `SELECT 
+                timestamp,
+                url,
+                metadata
+            FROM events
+            WHERE session_id = $1 AND event_type = 'click'
+            ORDER BY timestamp ASC`,
+            [sessionId]
+        );
+
+        res.json({
+            ...session,
+            duration: parseFloat(session.duration) || 0,
+            events: eventsResult.rows,
+            pages: pagesResult.rows.map(row => ({
+                ...row,
+                time_on_page: parseFloat(row.time_on_page) || 0
+            })),
+            clicks: clicksResult.rows
+        });
+    } catch (err) {
+        console.error('Error fetching session details:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
-    console.error('Unhandled error:', err);
+    console.error('❌ Unhandled error:', err);
     res.status(500).json({
         error: NODE_ENV === 'production' ? 'Internal server error' : err.message
     });
@@ -251,9 +360,10 @@ process.on('SIGINT', async () => {
 
 // Start server
 const server = app.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`📊 Environment: ${NODE_ENV}`);
-    console.log(`🔗 Allowed origins: ${allowedOrigins.join(', ')}`);
+    console.log('🚀 Server running on port', PORT);
+    console.log('📊 Environment:', NODE_ENV);
+    console.log('🌐 CORS: Allowing all origins for tracking');
+    console.log('💡 Visit http://localhost:5173 for dashboard');
 });
 
 // Handle server errors
