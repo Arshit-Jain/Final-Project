@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js",
+    "dev": "node server.js",
     "test": "node verify_session.js",
     "db:init": "psql $DATABASE_URL -f schema.sql",
     "db:migrate": "node scripts/migrate.js",

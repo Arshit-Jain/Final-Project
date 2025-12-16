@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 function App() {
   const [stats, setStats] = useState(null);
@@ -6,12 +7,22 @@ function App() {
   const [selectedSession, setSelectedSession] = useState(null);
   const [sessionDetails, setSessionDetails] = useState(null);
   const [loading, setLoading] = useState(true);
+  
+  // Chart state
+  const [chartView, setChartView] = useState('day');
+  const [chartDate, setChartDate] = useState(new Date().toISOString().split('T')[0]);
+  const [chartData, setChartData] = useState([]);
+  const [chartLoading, setChartLoading] = useState(true);
 
   useEffect(() => {
     fetchData();
     const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    fetchChartData();
+  }, [chartView, chartDate]);
 
   const fetchData = async () => {
     try {
@@ -29,6 +40,72 @@ function App() {
       console.error('Error fetching data:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchChartData = async () => {
+    setChartLoading(true);
+    try {
+      const params = new URLSearchParams({ view: chartView });
+      if (chartView === 'day') {
+        params.append('date', chartDate);
+      }
+      
+      const res = await fetch(`/api/analytics/hourly-clicks?${params}`);
+      const data = await res.json();
+      
+      // Validate response
+      if (!data || !data.data || !Array.isArray(data.data)) {
+        console.error('Invalid chart data response:', data);
+        setChartData([]);
+        return;
+      }
+      
+      if (chartView === 'day') {
+        // Convert GMT hours to MDT (UTC-6)
+        const processedData = data.data.map(row => {
+          const gmtHour = parseInt(row.hour, 10);
+          if (isNaN(gmtHour)) {
+            console.error('Invalid hour value:', row.hour);
+            return null;
+          }
+          
+          const mdtHour = gmtHour - 6;
+          
+          // Handle hour display (convert to 12-hour format with AM/PM)
+          let displayHour = mdtHour;
+          if (displayHour < 0) displayHour += 24;
+          if (displayHour >= 24) displayHour -= 24;
+          
+          const period = displayHour >= 12 ? 'PM' : 'AM';
+          const hour12 = displayHour === 0 ? 12 : displayHour > 12 ? displayHour - 12 : displayHour;
+          
+          return {
+            time: `${hour12}${period}`,
+            clicks: parseInt(row.clicks, 10) || 0,
+            sortOrder: displayHour
+          };
+        }).filter(Boolean); // Remove any null entries
+        
+        setChartData(processedData.sort((a, b) => a.sortOrder - b.sortOrder));
+      } else {
+        // Format data for week view - group by day
+        const dayMap = {};
+        data.data.forEach(row => {
+          if (!row.date) return;
+          
+          if (!dayMap[row.date]) {
+            dayMap[row.date] = { date: row.date, clicks: 0 };
+          }
+          dayMap[row.date].clicks += parseInt(row.clicks, 10) || 0;
+        });
+        setChartData(Object.values(dayMap));
+      }
+    } catch (err) {
+      console.error('Error fetching chart data:', err);
+      setChartData([]);
+    } finally {
+      setChartLoading(false);
     }
   };
 
@@ -54,7 +131,20 @@ function App() {
     return new Date(timestamp).toLocaleString();
   };
 
+  const handleDateChange = (days) => {
+    const newDate = new Date(chartDate);
+    newDate.setDate(newDate.getDate() + days);
+    setChartDate(newDate.toISOString().split('T')[0]);
+  };
+
   if (loading) return <div className="loading">Loading analytics...</div>;
+
+  // Calculate active sessions
+  const activeSessions = sessions.filter(s => {
+    if (!s || !s.start_time) return false;
+    const lastActivity = new Date(s.end_time || s.start_time);
+    return Date.now() - lastActivity.getTime() < 300000;
+  }).length;
 
   return (
     <div className="dashboard">
@@ -75,15 +165,93 @@ function App() {
         </div>
         <div className="card">
           <h3>Avg Duration</h3>
-          <div className="value">{formatDuration(stats?.avg_session_duration)}</div>
+          <div className="value">{formatDuration(stats?.avg_session_duration || 0)}</div>
         </div>
         <div className="card">
           <h3>Active Now</h3>
-          <div className="value">{sessions.filter(s => {
-            const lastActivity = new Date(s.end_time || s.start_time);
-            return Date.now() - lastActivity.getTime() < 300000; // 5 minutes
-          }).length}</div>
+          <div className="value">{activeSessions}</div>
         </div>
+      </div>
+
+      {/* Hourly Click Analytics Chart */}
+      <div className="section chart-section">
+        <div className="chart-header">
+          <h2>📈 Click Analytics</h2>
+          <div className="chart-controls">
+            <div className="view-toggle">
+              <button 
+                className={chartView === 'day' ? 'active' : ''}
+                onClick={() => setChartView('day')}
+              >
+                Daily
+              </button>
+              <button 
+                className={chartView === 'week' ? 'active' : ''}
+                onClick={() => setChartView('week')}
+              >
+                Weekly
+              </button>
+            </div>
+            
+            {chartView === 'day' && (
+              <div className="date-controls">
+                <button onClick={() => handleDateChange(-1)}>←</button>
+                <input 
+                  type="date" 
+                  value={chartDate}
+                  onChange={(e) => setChartDate(e.target.value)}
+                  max={new Date().toISOString().split('T')[0]}
+                />
+                <button 
+                  onClick={() => handleDateChange(1)}
+                  disabled={chartDate >= new Date().toISOString().split('T')[0]}
+                >
+                  →
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {chartLoading ? (
+          <div className="chart-loading">Loading chart data...</div>
+        ) : chartData.length === 0 ? (
+          <div className="no-data">No click data available for this period</div>
+        ) : (
+          <ResponsiveContainer width="100%" height={300}>
+            <LineChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+              <XAxis 
+                dataKey={chartView === 'day' ? 'time' : 'date'}
+                stroke="#64748b"
+                style={{ fontSize: '12px' }}
+              />
+              <YAxis 
+                stroke="#64748b"
+                style={{ fontSize: '12px' }}
+                allowDecimals={false}
+              />
+              <Tooltip 
+                contentStyle={{
+                  backgroundColor: '#fff',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: '8px',
+                  padding: '8px 12px'
+                }}
+              />
+              <Legend />
+              <Line 
+                type="monotone" 
+                dataKey="clicks" 
+                stroke="#3b82f6" 
+                strokeWidth={2}
+                dot={{ fill: '#3b82f6', r: 4 }}
+                activeDot={{ r: 6 }}
+                name="Clicks"
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        )}
       </div>
 
       {/* Sessions List */}
@@ -152,9 +320,9 @@ function App() {
                   <div key={idx} className="page-item">
                     <div className="page-url">{page.url}</div>
                     <div className="page-meta">
-                      <span>⏱️ {formatDuration(page.time_on_page)}</span>
-                      <span>👀 {page.view_count} view{page.view_count > 1 ? 's' : ''}</span>
-                      <span className="timestamp">{formatTimestamp(page.first_visit)}</span>
+                      <span>⏱️ {formatDuration(page.time_on_page || 0)}</span>
+                      <span>👀 {page.view_count || 0} view{(page.view_count || 0) > 1 ? 's' : ''}</span>
+                      <span className="timestamp">{page.first_visit ? formatTimestamp(page.first_visit) : 'N/A'}</span>
                     </div>
                   </div>
                 ))}
@@ -173,7 +341,7 @@ function App() {
                   <div key={idx} className="click-item">
                     <div className="click-header">
                       <span className="click-target">{click.metadata?.target || 'Unknown'}</span>
-                      <span className="click-time">{formatTimestamp(click.timestamp)}</span>
+                      <span className="click-time">{click.timestamp ? formatTimestamp(click.timestamp) : 'N/A'}</span>
                     </div>
                     {click.metadata?.text && (
                       <div className="click-text">"{click.metadata.text}"</div>
@@ -208,10 +376,10 @@ function App() {
                     </div>
                     <div className="timeline-content">
                       <div className="timeline-header">
-                        <span className="event-type">{event.event_type}</span>
-                        <span className="event-time">{formatTimestamp(event.timestamp)}</span>
+                        <span className="event-type">{event.event_type || 'unknown'}</span>
+                        <span className="event-time">{event.timestamp ? formatTimestamp(event.timestamp) : 'N/A'}</span>
                       </div>
-                      <div className="event-url">{event.url}</div>
+                      <div className="event-url">{event.url || 'N/A'}</div>
                       {event.metadata && Object.keys(event.metadata).length > 0 && (
                         <div className="event-metadata">
                           {JSON.stringify(event.metadata, null, 2)}
@@ -302,6 +470,107 @@ function App() {
           box-shadow: 0 1px 3px rgba(0,0,0,0.1);
           border: 1px solid #e2e8f0;
           margin-bottom: 24px;
+        }
+
+        .chart-section {
+          padding-bottom: 32px;
+        }
+
+        .chart-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 24px;
+          flex-wrap: wrap;
+          gap: 16px;
+        }
+
+        .chart-controls {
+          display: flex;
+          gap: 16px;
+          align-items: center;
+          flex-wrap: wrap;
+        }
+
+        .view-toggle {
+          display: flex;
+          gap: 0;
+          border: 2px solid #e2e8f0;
+          border-radius: 8px;
+          overflow: hidden;
+        }
+
+        .view-toggle button {
+          padding: 8px 20px;
+          background: white;
+          border: none;
+          cursor: pointer;
+          font-size: 0.875rem;
+          font-weight: 500;
+          color: #64748b;
+          transition: all 0.2s;
+        }
+
+        .view-toggle button:not(:last-child) {
+          border-right: 2px solid #e2e8f0;
+        }
+
+        .view-toggle button.active {
+          background: #3b82f6;
+          color: white;
+        }
+
+        .view-toggle button:hover:not(.active) {
+          background: #f8fafc;
+        }
+
+        .date-controls {
+          display: flex;
+          gap: 8px;
+          align-items: center;
+        }
+
+        .date-controls button {
+          padding: 8px 16px;
+          background: white;
+          border: 2px solid #e2e8f0;
+          border-radius: 6px;
+          cursor: pointer;
+          font-size: 1rem;
+          font-weight: 600;
+          color: #64748b;
+          transition: all 0.2s;
+        }
+
+        .date-controls button:hover:not(:disabled) {
+          border-color: #3b82f6;
+          color: #3b82f6;
+        }
+
+        .date-controls button:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        .date-controls input[type="date"] {
+          padding: 8px 12px;
+          border: 2px solid #e2e8f0;
+          border-radius: 6px;
+          font-size: 0.875rem;
+          color: #0f172a;
+          background: white;
+        }
+
+        .date-controls input[type="date"]:focus {
+          outline: none;
+          border-color: #3b82f6;
+        }
+
+        .chart-loading {
+          text-align: center;
+          padding: 80px 20px;
+          color: #64748b;
+          font-style: italic;
         }
 
         .sessions-list {

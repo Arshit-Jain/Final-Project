@@ -332,6 +332,58 @@ app.get('/api/sessions/:sessionId', async (req, res) => {
     }
 });
 
+
+app.get('/api/analytics/hourly-clicks', async (req, res) => {
+    const { view, date } = req.query;
+    
+    try {
+        if (view === 'day') {
+            // Get hourly breakdown for a specific day
+            const targetDate = date || new Date().toISOString().split('T')[0];
+            
+            const result = await db.query(`
+                SELECT 
+                    EXTRACT(HOUR FROM timestamp) as hour,
+                    COUNT(*) as clicks
+                FROM events
+                WHERE event_type = 'click'
+                    AND DATE(timestamp) = $1
+                GROUP BY EXTRACT(HOUR FROM timestamp)
+                ORDER BY hour ASC
+            `, [targetDate]);
+            
+            res.json({ 
+                data: result.rows,
+                date: targetDate,
+                view: 'day'
+            });
+        } else if (view === 'week') {
+            // Get daily breakdown for the past 7 days
+            const result = await db.query(`
+                SELECT 
+                    DATE(timestamp) as date,
+                    EXTRACT(HOUR FROM timestamp) as hour,
+                    COUNT(*) as clicks
+                FROM events
+                WHERE event_type = 'click'
+                    AND timestamp >= NOW() - INTERVAL '7 days'
+                GROUP BY DATE(timestamp), EXTRACT(HOUR FROM timestamp)
+                ORDER BY date DESC, hour ASC
+            `);
+            
+            res.json({ 
+                data: result.rows,
+                view: 'week'
+            });
+        } else {
+            res.status(400).json({ error: 'Invalid view parameter. Use "day" or "week"' });
+        }
+    } catch (err) {
+        console.error('Error fetching hourly click analytics:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
     console.error('❌ Unhandled error:', err);
