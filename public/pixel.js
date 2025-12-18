@@ -13,15 +13,15 @@
 (function () {
     'use strict';
 
-    // Configuration - UPDATE THIS WITH YOUR SERVER URL
+    // Configuration
     const CONFIG = {
         endpoint: 'http://localhost:3000/api/events',
-        batchInterval: 2000, // 2 seconds
+        batchInterval: 2000,
         maxQueueSize: 50,
         maxRetries: 3,
         retryDelay: 1000,
-        debug: true, // Set to false to reduce console noise
-        sessionTimeout: 30 * 60 * 1000 // 30 minutes of inactivity = new session
+        debug: true,
+        sessionTimeout: 30 * 60 * 1000 // 30 minutes
     };
 
     class Pixel {
@@ -32,7 +32,7 @@
             this.isFlushing = false;
             this.flushInterval = null;
 
-            // Wait for DOM to be ready before initializing
+            // Wait for DOM
             if (document.readyState === 'loading') {
                 document.addEventListener('DOMContentLoaded', () => this.init());
             } else {
@@ -41,96 +41,72 @@
         }
 
         getOrCreateSession() {
+            const STORAGE_KEY = 'pixel_session_data';
+            
             try {
-                // Try to use Greasemonkey storage (persists across all domains!)
-                if (typeof GM_getValue !== 'undefined') {
-                    let sessionData = GM_getValue('pixel_session_data', null);
-
-                    if (sessionData) {
-                        sessionData = JSON.parse(sessionData);
-                        const lastActivity = sessionData.lastActivity || 0;
+                // Try localStorage
+                const stored = localStorage.getItem(STORAGE_KEY);
+                
+                if (stored) {
+                    try {
+                        const sessionData = JSON.parse(stored);
                         const now = Date.now();
+                        const lastActivity = sessionData.lastActivity || 0;
 
-                        // Check if session is still valid (within timeout window)
+                        // Check if session is still valid
                         if (now - lastActivity < CONFIG.sessionTimeout) {
-                            // Update last activity time
+                            // Update activity timestamp
                             sessionData.lastActivity = now;
-                            GM_setValue('pixel_session_data', JSON.stringify(sessionData));
-                            this.log('♻️ Reusing existing session', { sessionId: sessionData.sessionId });
+                            localStorage.setItem(STORAGE_KEY, JSON.stringify(sessionData));
+                            
+                            this.log('♻️ Reusing existing session', { 
+                                sessionId: sessionData.sessionId,
+                                age: Math.floor((now - sessionData.created) / 1000) + 's'
+                            });
                             return sessionData.sessionId;
                         } else {
                             this.log('⏱️ Session expired, creating new one');
                         }
-                    }
-
-                    // Create new session
-                    const newSessionId = 'sess_' + this.generateId();
-                    const newSessionData = {
-                        sessionId: newSessionId,
-                        created: Date.now(),
-                        lastActivity: Date.now()
-                    };
-                    GM_setValue('pixel_session_data', JSON.stringify(newSessionData));
-                    this.log('🆕 Created new session', { sessionId: newSessionId });
-                    return newSessionId;
-                }
-
-                // Fallback to localStorage (domain-specific, but better than sessionStorage)
-                let sessionData = localStorage.getItem('pixel_session_data');
-
-                if (sessionData) {
-                    sessionData = JSON.parse(sessionData);
-                    const lastActivity = sessionData.lastActivity || 0;
-                    const now = Date.now();
-
-                    if (now - lastActivity < CONFIG.sessionTimeout) {
-                        sessionData.lastActivity = now;
-                        localStorage.setItem('pixel_session_data', JSON.stringify(sessionData));
-                        this.log('♻️ Reusing existing session (localStorage)', { sessionId: sessionData.sessionId });
-                        return sessionData.sessionId;
+                    } catch (parseError) {
+                        this.log('⚠️ Invalid session data, creating new session', 'warn');
                     }
                 }
 
-                // Create new session in localStorage
+                // Create new session
                 const newSessionId = 'sess_' + this.generateId();
                 const newSessionData = {
                     sessionId: newSessionId,
                     created: Date.now(),
                     lastActivity: Date.now()
                 };
-                localStorage.setItem('pixel_session_data', JSON.stringify(newSessionData));
-                this.log('🆕 Created new session (localStorage)', { sessionId: newSessionId });
+                
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(newSessionData));
+                this.log('🆕 Created new session', { sessionId: newSessionId });
                 return newSessionId;
 
-            } catch (e) {
-                this.log('⚠️ Storage not available, using in-memory session', 'warn');
-                // Final fallback: in-memory only (will be lost on page reload)
-                if (!this._fallbackSessionId) {
-                    this._fallbackSessionId = 'sess_' + this.generateId();
+            } catch (storageError) {
+                this.log('⚠️ localStorage not available, using in-memory session', 'warn');
+                
+                // Fallback to in-memory session
+                if (!window._pixelSessionId) {
+                    window._pixelSessionId = 'sess_' + this.generateId();
                 }
-                return this._fallbackSessionId;
+                return window._pixelSessionId;
             }
         }
 
         updateSessionActivity() {
+            const STORAGE_KEY = 'pixel_session_data';
+            
             try {
-                if (typeof GM_getValue !== 'undefined' && typeof GM_setValue !== 'undefined') {
-                    let sessionData = GM_getValue('pixel_session_data', null);
-                    if (sessionData) {
-                        sessionData = JSON.parse(sessionData);
-                        sessionData.lastActivity = Date.now();
-                        GM_setValue('pixel_session_data', JSON.stringify(sessionData));
-                    }
-                } else {
-                    let sessionData = localStorage.getItem('pixel_session_data');
-                    if (sessionData) {
-                        sessionData = JSON.parse(sessionData);
-                        sessionData.lastActivity = Date.now();
-                        localStorage.setItem('pixel_session_data', JSON.stringify(sessionData));
-                    }
+                const stored = localStorage.getItem(STORAGE_KEY);
+                if (stored) {
+                    const sessionData = JSON.parse(stored);
+                    sessionData.lastActivity = Date.now();
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify(sessionData));
                 }
             } catch (e) {
-                // Silently fail
+                // Silent fail
             }
         }
 
@@ -142,19 +118,19 @@
             this.log('🚀 Initializing pixel tracker...', {
                 sessionId: this.sessionId,
                 url: window.location.href,
-                storage: typeof GM_getValue !== 'undefined' ? 'GM_storage (cross-domain)' : 'localStorage (domain-specific)'
+                storage: 'localStorage'
             });
 
             // Track initial pageview
             this.track('pageview');
 
-            // Track clicks with event delegation
+            // Track clicks
             document.addEventListener('click', (e) => {
                 this.handleClick(e);
             }, true);
 
-            // Update session activity periodically
-            setInterval(() => this.updateSessionActivity(), 60000); // Every minute
+            // Update activity periodically
+            setInterval(() => this.updateSessionActivity(), 60000);
 
             // Flush periodically
             this.flushInterval = setInterval(() => this.flush(), CONFIG.batchInterval);
@@ -165,7 +141,7 @@
                 this.flush(true);
             });
 
-            // Flush on visibility change (mobile Safari)
+            // Flush on visibility change
             document.addEventListener('visibilitychange', () => {
                 if (document.visibilityState === 'hidden') {
                     this.updateSessionActivity();
@@ -173,7 +149,7 @@
                 }
             });
 
-            // Track navigation (for SPAs)
+            // Track navigation for SPAs
             let lastUrl = location.href;
             new MutationObserver(() => {
                 const currentUrl = location.href;
@@ -183,10 +159,7 @@
                 }
             }).observe(document, { subtree: true, childList: true });
 
-            // Recover failed events from previous session
-            this.recoverFailedEvents();
-
-            this.log('✅ Pixel tracker initialized successfully');
+            this.log('✅ Pixel tracker initialized');
         }
 
         handleClick(e) {
@@ -199,12 +172,10 @@
                     text: target.innerText ? target.innerText.substring(0, 50) : null
                 };
 
-                // Track link clicks
                 if (target.tagName === 'A') {
                     metadata.href = target.href;
                 }
 
-                // Track button clicks
                 if (target.tagName === 'BUTTON' || target.type === 'button') {
                     metadata.type = target.type;
                 }
@@ -218,7 +189,6 @@
 
         track(eventType, metadata = {}) {
             try {
-                // Prevent queue overflow
                 if (this.queue.length >= CONFIG.maxQueueSize) {
                     this.log('⚠️ Queue full, flushing...', 'warn');
                     this.flush();
@@ -234,7 +204,10 @@
                 };
 
                 this.queue.push(event);
-                this.log(`📊 Event queued: ${eventType}`, event);
+                this.log(`📊 Event queued: ${eventType}`, { 
+                    sessionId: this.sessionId,
+                    metadata 
+                });
             } catch (err) {
                 this.log(`Error tracking event: ${err.message}`, 'error');
             }
@@ -252,16 +225,15 @@
             this.log(`📤 Flushing ${eventsToSend.length} events...`);
 
             try {
-                // Use standard fetch API
                 const response = await fetch(CONFIG.endpoint, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify(eventsToSend),
-                    keepalive: synchronous, // Important for beforeunload
-                    mode: 'cors', // Explicit CORS mode
-                    credentials: 'omit' // Don't send cookies
+                    keepalive: synchronous,
+                    mode: 'cors',
+                    credentials: 'omit'
                 });
 
                 if (!response.ok) {
@@ -276,70 +248,19 @@
             } catch (err) {
                 this.log(`❌ Failed to send events: ${err.message}`, 'error');
 
-                // Retry logic (only for non-synchronous flushes)
                 if (!synchronous && this.retryCount < CONFIG.maxRetries) {
                     this.retryCount++;
                     this.log(`🔄 Retrying... (${this.retryCount}/${CONFIG.maxRetries})`);
-
-                    // Put events back in queue
                     this.queue = [...eventsToSend, ...this.queue];
 
-                    // Retry after delay
                     setTimeout(() => {
                         this.isFlushing = false;
                         this.flush();
                     }, CONFIG.retryDelay * this.retryCount);
                     return;
                 }
-
-                // If all retries fail or synchronous, store for next session
-                this.storeFailedEvents(eventsToSend);
             } finally {
                 this.isFlushing = false;
-            }
-        }
-
-        storeFailedEvents(events) {
-            try {
-                if (typeof GM_getValue !== 'undefined' && typeof GM_setValue !== 'undefined') {
-                    const failed = JSON.parse(GM_getValue('pixel_failed_events', '[]'));
-                    failed.push(...events);
-                    GM_setValue('pixel_failed_events', JSON.stringify(failed.slice(-100)));
-                    this.log('💾 Events stored in GM_storage for retry');
-                } else if (typeof localStorage !== 'undefined') {
-                    const failed = JSON.parse(localStorage.getItem('pixel_failed_events') || '[]');
-                    failed.push(...events);
-                    localStorage.setItem('pixel_failed_events', JSON.stringify(failed.slice(-100)));
-                    this.log('💾 Events stored in localStorage for retry');
-                }
-            } catch (e) {
-                this.log(`Failed to store events: ${e.message}`, 'error');
-            }
-        }
-
-        recoverFailedEvents() {
-            try {
-                let failed = [];
-
-                if (typeof GM_getValue !== 'undefined') {
-                    failed = JSON.parse(GM_getValue('pixel_failed_events', '[]'));
-                    if (failed.length > 0 && typeof GM_setValue !== 'undefined') {
-                        GM_setValue('pixel_failed_events', '[]'); // Clear after recovery
-                    }
-                } else if (typeof localStorage !== 'undefined') {
-                    failed = JSON.parse(localStorage.getItem('pixel_failed_events') || '[]');
-                    if (failed.length > 0) {
-                        localStorage.removeItem('pixel_failed_events');
-                    }
-                }
-
-                if (failed.length > 0) {
-                    this.log(`🔄 Recovering ${failed.length} failed events from previous session`);
-                    this.queue.push(...failed);
-                    setTimeout(() => this.flush(), 1000);
-                }
-            } catch (e) {
-                this.log(`Failed to recover events: ${e.message}`, 'error');
             }
         }
 
@@ -381,18 +302,17 @@
         if (!window.pixelTracker) {
             window.pixelTracker = new Pixel();
 
-            // Expose a global API
+            // Expose global API
             window.gravity = {
                 track: (eventName, metadata) => window.pixelTracker.trackCustomEvent(eventName, metadata),
                 getSession: () => window.pixelTracker.getSession()
             };
 
-            console.log('🎯 Pixel Tracker loaded successfully!');
+            console.log('🎯 Pixel Tracker loaded!');
             console.log('📍 Session ID:', window.pixelTracker.getSession());
-            console.log('🌐 Tracking URL:', window.location.href);
+            console.log('🌐 URL:', window.location.href);
         }
     } catch (error) {
         console.error('❌ Failed to initialize Pixel Tracker:', error);
     }
-
 })();
