@@ -15,7 +15,7 @@
 
     // Configuration
     const CONFIG = {
-        endpoint: 'http://localhost:3000/api/events',
+        endpoint: 'https://final-project-jnv8.onrender.com/api/events',
         batchInterval: 2000,
         maxQueueSize: 50,
         maxRetries: 3,

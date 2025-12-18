@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
+// Get API URL from environment variable (for production)
+const API_BASE_URL = import.meta.env.VITE_API_URL || '';
+
 function App() {
   const [stats, setStats] = useState(null);
   const [sessions, setSessions] = useState([]);
@@ -27,8 +30,8 @@ function App() {
   const fetchData = async () => {
     try {
       const [statsRes, sessionsRes] = await Promise.all([
-        fetch('/api/stats'),
-        fetch('/api/sessions')
+        fetch(`${API_BASE_URL}/api/stats`),
+        fetch(`${API_BASE_URL}/api/sessions`)
       ]);
       
       const statsData = await statsRes.json();
@@ -51,7 +54,7 @@ function App() {
         params.append('date', chartDate);
       }
       
-      const res = await fetch(`/api/analytics/hourly-clicks?${params}`);
+      const res = await fetch(`${API_BASE_URL}/api/analytics/hourly-clicks?${params}`);
       const data = await res.json();
       
       // Validate response
@@ -85,11 +88,11 @@ function App() {
             clicks: parseInt(row.clicks, 10) || 0,
             sortOrder: displayHour
           };
-        }).filter(Boolean); // Remove any null entries
+        }).filter(Boolean);
         
         setChartData(processedData.sort((a, b) => a.sortOrder - b.sortOrder));
       } else {
-        // Format data for week view - group by day
+        // Format data for week view
         const dayMap = {};
         data.data.forEach(row => {
           if (!row.date) return;
@@ -111,7 +114,7 @@ function App() {
 
   const fetchSessionDetails = async (sessionId) => {
     try {
-      const res = await fetch(`/api/sessions/${sessionId}`);
+      const res = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}`);
       const data = await res.json();
       setSessionDetails(data);
       setSelectedSession(sessionId);
@@ -727,27 +730,6 @@ function App() {
           color: #475569;
           margin-top: 6px;
           font-style: italic;
-        }
-
-        .click-href {
-          font-size: 0.75rem;
-          color: #3b82f6;
-          margin-top: 4px;
-        }
-
-        .click-meta {
-          display: flex;
-          gap: 8px;
-          margin-top: 8px;
-        }
-
-        .tag {
-          font-size: 0.75rem;
-          background: #fef3c7;
-          color: #92400e;
-          padding: 2px 8px;
-          border-radius: 4px;
-          font-family: 'Monaco', monospace;
         }
 
         .timeline {
