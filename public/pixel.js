@@ -393,4 +393,6 @@
         }
     } catch (error) {
         console.error('❌ Failed to initialize Pixel Tracker:', error);
-    
+    }
+
+})();

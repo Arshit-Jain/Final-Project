@@ -295,11 +295,11 @@ function App() {
           <div className="info-grid">
             <div className="info-item">
               <label>Session ID</label>
-              <span>{sessionDetails.session_id}</span>
+              <span>{String(sessionDetails.session_id || 'N/A')}</span>
             </div>
             <div className="info-item">
               <label>Start Time</label>
-              <span>{formatTimestamp(sessionDetails.start_time)}</span>
+              <span>{sessionDetails.start_time ? formatTimestamp(sessionDetails.start_time) : 'N/A'}</span>
             </div>
             <div className="info-item">
               <label>Duration</label>
@@ -340,20 +340,11 @@ function App() {
                 {sessionDetails.clicks.map((click, idx) => (
                   <div key={idx} className="click-item">
                     <div className="click-header">
-                      <span className="click-target">{click.metadata?.target || 'Unknown'}</span>
+                      <span className="click-target">Click Event</span>
                       <span className="click-time">{click.timestamp ? formatTimestamp(click.timestamp) : 'N/A'}</span>
                     </div>
-                    {click.metadata?.text && (
-                      <div className="click-text">"{click.metadata.text}"</div>
-                    )}
-                    {click.metadata?.href && (
-                      <div className="click-href">→ {click.metadata.href}</div>
-                    )}
-                    {(click.metadata?.id || click.metadata?.class) && (
-                      <div className="click-meta">
-                        {click.metadata.id && <span className="tag">#{click.metadata.id}</span>}
-                        {click.metadata.class && <span className="tag">.{click.metadata.class}</span>}
-                      </div>
+                    {click.url && (
+                      <div className="click-text">URL: {click.url}</div>
                     )}
                   </div>
                 ))}
